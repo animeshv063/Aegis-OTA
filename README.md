@@ -1,5 +1,11 @@
 # Aegis OTA
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Render_Online-success?style=for-the-badge&logo=render)](https://aegis-ota.onrender.com)
+[![CI Pipeline](https://img.shields.io/github/actions/workflow/status/animeshv063/Aegis-OTA/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI_Tests)](https://github.com/animeshv063/Aegis-OTA/actions)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+
+> **Live Fleet Operations Dashboard**: [https://aegis-ota.onrender.com](https://aegis-ota.onrender.com)
+
 Aegis OTA is a fault-tolerant Over-The-Air update system designed for edge devices and physical fleet hardware running custom storage software in volatile environments.
 
 The project focuses on safe deployment for embedded systems where a failed update can brick a node permanently. Instead of patching a live filesystem, the platform uses immutable OS images, A/B partition switching, cryptographic verification, and bootloader-driven rollback to keep devices operational even when power loss, network instability, or kernel failures occur.
