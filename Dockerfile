@@ -1,4 +1,4 @@
-# Build stage
+# Build stage — cache bust: 2026-11-17T19:47
 FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
