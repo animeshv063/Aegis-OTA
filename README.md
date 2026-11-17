@@ -1,13 +1,13 @@
 # Aegis OTA
 
 [![Live Demo - Render](https://img.shields.io/badge/Live_Demo-Render-success?style=for-the-badge&logo=render)](https://aegis-ota.onrender.com)
-[![Live Demo - Railway](https://img.shields.io/badge/Live_Demo-Railway-purple?style=for-the-badge&logo=railway)](https://aegis-ota-production.up.railway.app)
+[![Live Demo - Railway](https://img.shields.io/badge/Live_Demo-Railway-purple?style=for-the-badge&logo=railway)](https://aegis-ota-production-0a1dc1b6.up.railway.app)
 [![CI Pipeline](https://img.shields.io/github/actions/workflow/status/animeshv063/Aegis-OTA/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI_Tests)](https://github.com/animeshv063/Aegis-OTA/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 
 > **Live Fleet Operations Dashboard**:
 > - Primary: [https://aegis-ota.onrender.com](https://aegis-ota.onrender.com)
-> - Mirror / Backup: [https://aegis-ota-production.up.railway.app](https://aegis-ota-production.up.railway.app)
+> - Mirror / Backup: [https://aegis-ota-production-0a1dc1b6.up.railway.app](https://aegis-ota-production-0a1dc1b6.up.railway.app)
 
 Aegis OTA is a fault-tolerant Over-The-Air update system designed for edge devices and physical fleet hardware running custom storage software in volatile environments.
 
