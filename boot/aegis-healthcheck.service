@@ -1,0 +1,17 @@
+[Unit]
+Description=Aegis OTA Post-Boot Health Verification & Commit Service
+DefaultDependencies=no
+After=local-fs.target network.target time-sync.target
+Before=multi-user.target
+ConditionPathExists=/usr/bin/aegis-agent
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/aegis-agent healthcheck
+TimeoutSec=120
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

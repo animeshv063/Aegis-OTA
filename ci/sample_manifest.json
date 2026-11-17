@@ -1,0 +1,15 @@
+{
+  "version": "1.2.0",
+  "image_name": "aegis-nas-os-v1.2.0-arm64.rootfs.img",
+  "target_arch": "arm64",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "size_bytes": 524288000,
+  "build_timestamp": "2026-11-17T12:00:00Z",
+  "min_hw_revision": "rev2.1",
+  "signature": "8a32b21cf56b823e2dc40d7c5be144f89d0c24b910ca8b0b5e5a9629b380a1491cf2d011eb122c6c0b39572b83b9c8ad30954b9f298845012574e4c3e8006f0a",
+  "metadata": {
+    "builder": "Yocto Scarthgap 5.0",
+    "kernel": "6.6.30-aegis-nas",
+    "storage_stack": "zfs-2.2.3"
+  }
+}

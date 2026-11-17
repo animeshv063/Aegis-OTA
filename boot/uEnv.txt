@@ -1,0 +1,23 @@
+# Aegis OTA Bootloader Environment Configuration (U-Boot)
+# Dual A/B Rootfs Partition Switching with Hardware Boot Counter
+
+# Boot slot selection
+active_slot=a
+fallback_slot=a
+upgrade_available=0
+
+# Hardware watchdog & bootcounter limits
+bootcount=0
+bootlimit=3
+
+# Kernel boot arguments
+slot_a_root=/dev/mmcblk0p2
+slot_b_root=/dev/mmcblk0p3
+console_args=console=ttyS0,115200 rootwait rw panic=10
+
+# Dynamic boot command selection
+bootcmd_slot_a=setenv bootargs ${console_args} root=${slot_a_root} aegis.slot=a; load mmc 0:1 ${kernel_addr_r} Image; booti ${kernel_addr_r} - ${fdt_addr}
+bootcmd_slot_b=setenv bootargs ${console_args} root=${slot_b_root} aegis.slot=b; load mmc 0:1 ${kernel_addr_r} Image; booti ${kernel_addr_r} - ${fdt_addr}
+
+# Fallback command executed automatically if bootcount > bootlimit
+altbootcmd=echo [AEGIS] Bootlimit exceeded! Initiating automatic bootloader rollback...; setenv active_slot ${fallback_slot}; setenv upgrade_available 0; setenv bootcount 0; saveenv; if test "${active_slot}" = "a"; then run bootcmd_slot_a; else run bootcmd_slot_b; fi
