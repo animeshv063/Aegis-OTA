@@ -84,28 +84,14 @@ If you want a stronger brand identity, a few good options are:
 This repository is intended to evolve into a complete OTA platform with:
 
 - agent/ for the Go-based edge updater
-- backend/ for the fleet OTA management server
 - ci/ for signing and artifact generation
 - boot/ for bootloader configuration and rollback logic
 - scripts/ for deployment and validation tools
 - docs/ for architecture and operational runbooks
 
-## Quick Start (Docker)
-
-To test the entire fleet update pipeline locally:
-
-```bash
-# Build and spin up the OTA server and a simulated edge NAS node
-docker compose up --build
-```
-
-- **OTA Server**: Accessible at `http://localhost:8080`
-- **Manifest Endpoint**: `http://localhost:8080/api/v1/ota/manifest`
-- **Fleet Devices**: `http://localhost:8080/api/v1/fleet/devices`
-
 ## Status
 
-**Active & Production-Ready**: Core edge agent, cryptographic signing pipeline, U-Boot fail-safe boot logic, backend fleet server, and Docker simulation harness are fully implemented and verified.
+This project is currently in the design and foundation stage, with the focus on creating a resilient, self-healing OTA deployment model for embedded fleet devices.
 
 ---
 
