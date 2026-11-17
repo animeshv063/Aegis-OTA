@@ -11,6 +11,8 @@ import os
 import sys
 import time
 
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
 def compute_sha256(filepath):
     hasher = hashlib.sha256()
     size = 0
@@ -47,17 +49,10 @@ def main():
     # Build canonical payload: version|image_name|target_arch|sha256|size_bytes|unix_timestamp
     canonical = f"{args.version}|{image_name}|{args.arch}|{sha256_hash}|{size_bytes}|{now_ts}".encode("utf-8")
 
-    signature_hex = ""
-    try:
-        from cryptography.hazmat.primitives.asymmetric import ed25519
-        priv_bytes = bytes.fromhex(priv_hex)
-        priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
-        sig = priv_key.sign(canonical)
-        signature_hex = sig.hex()
-    except Exception as e:
-        print(f"[WARN] Cryptography signing module fallback: {e}")
-        # Deterministic HMAC/SHA signature placeholder for development environments
-        signature_hex = hashlib.sha512(canonical + bytes.fromhex(priv_hex[:64])).hexdigest()[:128]
+    priv_bytes = bytes.fromhex(priv_hex)
+    priv_key = ed25519.Ed25519PrivateKey.from_private_bytes(priv_bytes)
+    sig = priv_key.sign(canonical)
+    signature_hex = sig.hex()
 
     manifest_data = {
         "version": args.version,
