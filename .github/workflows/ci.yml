@@ -1,0 +1,56 @@
+name: Aegis OTA CI Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install cryptography
+
+      - name: Build Go Agent
+        run: |
+          cd agent
+          go build -v ./...
+
+      - name: Build Backend Server
+        run: |
+          cd backend
+          go build -v ./...
+
+      - name: Test Keygen & Artifact Signing
+        run: |
+          cd ci
+          python keygen.py
+          # Generate 1MB dummy rootfs to test signing
+          dd if=/dev/zero of=test_rootfs.img bs=1M count=1
+          python sign_artifact.py --image test_rootfs.img --version 1.0.0 --arch x86_64 --key keys/aegis_release.key --out test_manifest.json
+
+      - name: Verify Manifest Signature with Agent
+        run: |
+          cd agent
+          go run ./cmd/aegis-agent verify --manifest ../ci/test_manifest.json --pubkey $(cat ../ci/keys/aegis_release.pub)
+
+      - name: Build Docker Containers
+        run: |
+          docker compose build

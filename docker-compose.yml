@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # Fleet OTA Backend Server (Anirudh - Backend Engineer)
+  aegis-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aegis-ota-server
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Mock Edge Node (Animesh & Anant - OS & Systems Engineers)
+  mock-edge-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aegis-mock-node
+    depends_on:
+      aegis-server:
+        condition: service_healthy
+    environment:
+      - AEGIS_MOCK_UBOOT=1
+      - AEGIS_UBOOT_ENV_FILE=/tmp/aegis_uboot.env
+      - AEGIS_ACTIVE_SLOT=a
+      - AEGIS_SLOT_A_DEV=/tmp/slot_a.bin
+      - AEGIS_SLOT_B_DEV=/tmp/slot_b.bin
+      - AEGIS_DATA_PATH=/tmp/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== Mock Embedded Edge Node Initializing ==="
+        mkdir -p /tmp/data
+        touch /tmp/slot_a.bin /tmp/slot_b.bin
+        echo "Checking Aegis Agent status..."
+        aegis-agent status
+        echo "Running post-boot self-healing health check..."
+        aegis-agent healthcheck
+        echo "Registering heartbeat with OTA server..."
+        curl -s -X POST http://aegis-server:8080/api/v1/fleet/heartbeat \
+          -H "Content-Type: application/json" \
+          -d '{"device_id":"nas-node-001","hardware_model":"Aegis-NAS-x64","current_slot":"a","current_version":"1.1.0","status":"healthy"}'
+        echo ""
+        echo "Edge node simulation active. Monitoring for OTA updates..."
+        tail -f /dev/null
