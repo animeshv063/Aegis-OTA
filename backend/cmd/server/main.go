@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Manifest struct {
 	Version        string            `json:"version"`
@@ -25,18 +25,22 @@ type Manifest struct {
 	Metadata       map[string]string `json:"metadata"`
 }
 
+// IMPORTANT: StableSlot and StableVersion track the last known-good state
+// for rollback. These never change until a successful commit.
 type DeviceInfo struct {
-	DeviceID       string    `json:"device_id"`
-	HardwareModel  string    `json:"hardware_model"`
-	CurrentSlot    string    `json:"current_slot"`
-	CurrentVersion string    `json:"current_version"`
-	BootCount      int       `json:"boot_count"`
-	BootLimit      int       `json:"boot_limit"`
-	UpgradePending bool      `json:"upgrade_pending"`
-	HealthStatus   string    `json:"health_status"`
-	LastSeen       time.Time `json:"last_seen"`
-	StoragePool    string    `json:"storage_pool"`
-	Uptime         string    `json:"uptime"`
+	DeviceID        string    `json:"device_id"`
+	HardwareModel   string    `json:"hardware_model"`
+	CurrentSlot     string    `json:"current_slot"`
+	CurrentVersion  string    `json:"current_version"`
+	StableSlot      string    `json:"stable_slot"`
+	StableVersion   string    `json:"stable_version"`
+	BootCount       int       `json:"boot_count"`
+	BootLimit       int       `json:"boot_limit"`
+	UpgradePending  bool      `json:"upgrade_pending"`
+	HealthStatus    string    `json:"health_status"`
+	LastSeen        time.Time `json:"last_seen"`
+	StoragePool     string    `json:"storage_pool"`
+	Uptime          string    `json:"uptime"`
 }
 
 type SimLog struct {
@@ -54,7 +58,7 @@ type State struct {
 	logs     []SimLog
 }
 
-// ── Init ─────────────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 
 func newState() *State {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -78,25 +82,29 @@ func newState() *State {
 		},
 	}
 
+	// All nodes start on Slot A, v1.1.0 (factory stable baseline)
+	makeDevice := func(id, hw, pool, uptime string) *DeviceInfo {
+		return &DeviceInfo{
+			DeviceID:       id,
+			HardwareModel:  hw,
+			CurrentSlot:    "A",
+			CurrentVersion: "1.1.0",
+			StableSlot:     "A",
+			StableVersion:  "1.1.0",
+			BootCount:      0,
+			BootLimit:      3,
+			UpgradePending: false,
+			HealthStatus:   "HEALTHY",
+			LastSeen:       time.Now(),
+			StoragePool:    pool,
+			Uptime:         uptime,
+		}
+	}
+
 	devices := map[string]*DeviceInfo{
-		"nas-alpha-01": {
-			DeviceID: "nas-alpha-01", HardwareModel: "Rockchip RK3588 Quad-SATA",
-			CurrentSlot: "A", CurrentVersion: "1.1.0", BootCount: 0, BootLimit: 3,
-			HealthStatus: "HEALTHY", LastSeen: time.Now(),
-			StoragePool: "ZFS RAIDZ2 (4x 8TB)", Uptime: "12d 4h 33m",
-		},
-		"nas-bravo-02": {
-			DeviceID: "nas-bravo-02", HardwareModel: "Intel Atom x6413E 8-Bay NAS",
-			CurrentSlot: "A", CurrentVersion: "1.1.0", BootCount: 0, BootLimit: 3,
-			HealthStatus: "HEALTHY", LastSeen: time.Now(),
-			StoragePool: "ZFS Mirror (2x 16TB)", Uptime: "7d 2h 11m",
-		},
-		"nas-charlie-03": {
-			DeviceID: "nas-charlie-03", HardwareModel: "Ampere Altra Edge Storage",
-			CurrentSlot: "A", CurrentVersion: "1.1.0", BootCount: 0, BootLimit: 3,
-			HealthStatus: "HEALTHY", LastSeen: time.Now(),
-			StoragePool: "NVMe-oF Pool", Uptime: "3d 9h 55m",
-		},
+		"nas-alpha-01":   makeDevice("nas-alpha-01", "Rockchip RK3588 Quad-SATA", "ZFS RAIDZ2 (4x 8TB)", "12d 4h 33m"),
+		"nas-bravo-02":   makeDevice("nas-bravo-02", "Intel Atom x6413E 8-Bay NAS", "ZFS Mirror (2x 16TB)", "7d 2h 11m"),
+		"nas-charlie-03": makeDevice("nas-charlie-03", "Ampere Altra Edge Storage", "NVMe-oF Pool", "3d 9h 55m"),
 	}
 
 	logs := []SimLog{
@@ -115,7 +123,7 @@ func (s *State) addLog(src, level, msg string) {
 	}
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
 	port := os.Getenv("PORT")
@@ -173,46 +181,80 @@ func main() {
 			}
 			dev.LastSeen = time.Now()
 
+			// passive = the slot that is NOT currently active
 			passive := "B"
 			if dev.CurrentSlot == "B" {
 				passive = "A"
 			}
 
 			switch action {
-			case "flash_update":
-				dev.UpgradePending = true
-				dev.HealthStatus = "UPGRADE_PENDING"
-				dev.BootCount = 0
-				dev.CurrentVersion = st.manifest.Version
-				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming 500MB image (v%s) to passive Slot %s...", id, st.manifest.Version, passive))
-				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv active_slot=%s upgrade_available=1 bootcount=0", id, passive))
 
+			// ── ACTION 1: STREAM UPDATE ──────────────────────────────────────
+			// Streams new OS into passive slot. Active slot untouched.
+			// Version shows new version as "pending trial". Bootcount starts at 0.
+			case "flash_update":
+				// Only allow streaming if not already in a pending state
+				dev.UpgradePending = true
+				dev.BootCount = 0
+				dev.HealthStatus = "UPGRADE_PENDING"
+				// Show new version as pending (flashed onto passive slot)
+				// Active slot stays same, but we track what's pending
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming v%s image (500MB) to passive Slot %s...", id, st.manifest.Version, passive))
+				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv: active_slot=%s upgrade_available=1 bootcount=0", id, dev.CurrentSlot))
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Flash complete. SHA-256 checksum verified on Slot %s. Rebooting into trial boot...", id, passive))
+
+			// ── ACTION 2: PANIC / CRASH ──────────────────────────────────────
+			// Simulates a boot crash on the new OS.
+			// bootcount increments each time.
+			// When bootcount reaches bootlimit (3), U-Boot auto-rollback fires:
+			//   - Slot reverts to StableSlot (the last committed good slot)
+			//   - Version reverts to StableVersion (the last committed good version)
+			//   - bootcount resets to 0
 			case "simulate_panic":
+				if !dev.UpgradePending {
+					// No update in progress — nothing to panic about
+					st.addLog("AGENT", "WARN", fmt.Sprintf("[%s] No upgrade pending. Stream an update first before triggering panic.", id))
+					continue
+				}
 				dev.BootCount++
 				if dev.BootCount < dev.BootLimit {
-					dev.HealthStatus = fmt.Sprintf("CRASH (ATTEMPT %d/%d)", dev.BootCount, dev.BootLimit)
-					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — VFS: unable to mount rootfs! (Attempt %d/%d)", id, dev.BootCount, dev.BootLimit))
-					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog timer expired! Hard power-cycle rebooted board. Bootcount = %d/%d", id, dev.BootCount, dev.BootLimit))
+					// Still within limit — crash noted, counting attempts
+					dev.HealthStatus = fmt.Sprintf("BOOT_FAIL %d/%d", dev.BootCount, dev.BootLimit)
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic! VFS: cannot mount rootfs. Boot attempt %d/%d failed.", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog expired (60s). Hard power-cycle. U-Boot bootcount now %d/%d.", id, dev.BootCount, dev.BootLimit))
 				} else {
-					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — fatal crash on Attempt 3/3!", id))
-					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered board power-cycle!", id))
-					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] BOOTCOUNT (3/3) EXCEEDED BOOTLIMIT! Triggering ALTBOOTCMD auto-rollback!", id))
+					// Limit reached — U-Boot fires altbootcmd, rollback to last stable
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic! Boot attempt %d/%d — BOOTLIMIT EXCEEDED!", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered hard board power-cycle!", id))
+					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount(%d) >= bootlimit(%d)! Executing ALTBOOTCMD...", id, dev.BootCount, dev.BootLimit))
+					// Roll back to last known-good (stable) state
+					dev.CurrentSlot = dev.StableSlot
+					dev.CurrentVersion = dev.StableVersion
 					dev.BootCount = 0
 					dev.UpgradePending = false
-					dev.HealthStatus = "REVERTED_TO_STABLE"
-					dev.CurrentVersion = "1.1.0"
-					dev.CurrentSlot = "A"
-					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Auto-Rollback complete! Back to Slot A (v1.1.0). Zero-brick self-healing verified.", id))
+					dev.HealthStatus = "HEALTHY"
+					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] ROLLBACK COMPLETE. Restored Slot %s (v%s). Zero-brick — device self-healed!", id, dev.StableSlot, dev.StableVersion))
 				}
 
+			// ── ACTION 3: HEALTH CHECK & COMMIT ─────────────────────────────
+			// New OS booted successfully and passed all checks.
+			// Permanently commit: switch active slot, update stable baseline.
 			case "simulate_success":
+				if !dev.UpgradePending {
+					st.addLog("AGENT", "WARN", fmt.Sprintf("[%s] No upgrade pending. Stream an update first.", id))
+					continue
+				}
+				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] ZFS pool imported OK. 10GbE link UP. All system daemons active.", id))
+				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] Post-boot health checks PASSED on Slot %s (v%s).", id, passive, st.manifest.Version))
+				// Commit: make new slot and version the permanent stable baseline
 				dev.CurrentSlot = passive
 				dev.CurrentVersion = st.manifest.Version
-				dev.UpgradePending = false
+				dev.StableSlot = passive
+				dev.StableVersion = st.manifest.Version
 				dev.BootCount = 0
+				dev.UpgradePending = false
 				dev.HealthStatus = "HEALTHY"
-				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] ZFS pool imported, 10GbE link up, all daemons active.", id))
-				st.addLog("AGENT", "SUCCESS", fmt.Sprintf("[%s] Slot %s permanently committed in U-Boot env.", id, passive))
+				st.addLog("AGENT", "SUCCESS", fmt.Sprintf("[%s] COMMIT OK. Slot %s (v%s) is now permanent. bootcount=0 upgrade_available=0.", id, passive, st.manifest.Version))
 			}
 		}
 
@@ -242,7 +284,6 @@ func main() {
 // ── HTML Builder ──────────────────────────────────────────────────────────────
 
 func buildHTML(st *State) string {
-	// Build node cards HTML
 	nodeOrder := []string{"nas-alpha-01", "nas-bravo-02", "nas-charlie-03"}
 	nodeCardsHTML := ""
 	for _, id := range nodeOrder {
@@ -254,9 +295,11 @@ func buildHTML(st *State) string {
 		if dev.CurrentSlot == "B" {
 			slotClass = "slot-b"
 		}
-		statusColor := "#10b981"
-		if dev.HealthStatus != "HEALTHY" {
-			statusColor = "#f59e0b"
+		statusColor := "#10b981" // green
+		if dev.HealthStatus == "UPGRADE_PENDING" {
+			statusColor = "#f59e0b" // orange
+		} else if dev.HealthStatus != "HEALTHY" {
+			statusColor = "#ef4444" // red for BOOT_FAIL x/y
 		}
 		nodeCardsHTML += fmt.Sprintf(`
 <div class="node-card" id="card-%s">
@@ -294,10 +337,10 @@ func buildHTML(st *State) string {
 		)
 	}
 
-	// Build initial console logs HTML
 	logsHTML := ""
 	for _, l := range st.logs {
-		logsHTML += fmt.Sprintf(`<div class="log-entry"><span class="log-ts">[%s]</span> <span class="src-%s">[%s]</span>: <span class="lvl-%s">%s</span></div>`,
+		logsHTML += fmt.Sprintf(
+			`<div class="log-entry"><span class="log-ts">[%s]</span> <span class="src-%s">[%s]</span>: <span class="lvl-%s">%s</span></div>`,
 			l.Timestamp, l.Source, l.Source, l.Level, l.Message)
 	}
 
@@ -329,11 +372,9 @@ header{display:flex;justify-content:space-between;align-items:center;padding-bot
 @media(max-width:1050px){.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:1.4rem;margin-bottom:1rem}
 .panel-title{font-size:1rem;font-weight:700;margin-bottom:1.1rem}
-/* Batch panel */
 .batch-box{background:#0a0f1c;border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:1rem;margin-bottom:1.2rem}
 .batch-title{font-size:.85rem;font-weight:700;color:var(--warn);margin-bottom:.8rem}
 .batch-btns{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}
-/* Node cards */
 .node-card{background:#0a0f1c;border:1px solid #1a2234;border-radius:10px;padding:1.1rem;margin-bottom:.9rem;transition:border-color .3s,box-shadow .3s}
 .node-card.panic-anim{border-color:var(--danger)!important;box-shadow:0 0 18px rgba(239,68,68,.35)!important;animation:panicPulse .55s infinite}
 .node-card.pending-anim{border-color:var(--warn)!important}
@@ -353,12 +394,10 @@ header{display:flex;justify-content:space-between;align-items:center;padding-bot
 .btn-panic:hover{background:rgba(239,68,68,.25)}
 .btn-commit{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.35);color:#86efac}
 .btn-commit:hover{background:rgba(16,185,129,.25)}
-/* Progress bar */
 .prog-wrap{margin-top:.8rem;display:none}
 .prog-label{font-size:.72rem;color:var(--muted);margin-bottom:.3rem;font-family:'JetBrains Mono',monospace}
 .prog-bg{background:#0d1526;border-radius:999px;height:8px;overflow:hidden}
 .prog-fill{height:8px;border-radius:999px;background:linear-gradient(90deg,#0284c7,#38bdf8);width:0%;transition:width .25s}
-/* Console */
 .console{background:#06090e;border:1px solid #1a2234;border-radius:10px;padding:.9rem;font-family:'JetBrains Mono',monospace;font-size:.74rem;height:300px;overflow-y:auto}
 .log-entry{margin-bottom:.35rem;line-height:1.5}
 .log-ts{color:#475569}
@@ -378,7 +417,6 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
 </head>
 <body>
 <div class="wrap">
-
 <header>
   <div class="brand">
     <h1>&#x26E8; Aegis OTA Fleet Operations</h1>
@@ -386,18 +424,14 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
   </div>
   <div class="badge-live"><span class="dot"></span>FLEET ACTIVE &bull; WATCHDOG ARMED &bull; <span id="clk">--:--:--</span></div>
 </header>
-
 <div class="stats">
   <div class="stat"><div class="stat-lbl">Total Connected Nodes</div><div class="stat-val">3 <span style="font-size:.9rem;color:var(--muted)">Units</span></div></div>
   <div class="stat"><div class="stat-lbl">Cryptographic Protection</div><div class="stat-val" style="color:var(--primary)">Ed25519</div></div>
   <div class="stat"><div class="stat-lbl">Active Partitions</div><div class="stat-val">A / B <span style="font-size:.9rem;color:var(--success)">Immutable</span></div></div>
   <div class="stat"><div class="stat-lbl">Bootloader Rollback</div><div class="stat-val" style="color:var(--success)">Auto-Armed</div></div>
 </div>
-
 <div class="layout">
 <div>
-
-  <!-- Batch OTA -->
   <div class="panel">
     <div class="panel-title">&#9889; Batch Fleet OTA &mdash; All 3 Nodes Simultaneously</div>
     <div class="batch-box">
@@ -409,8 +443,6 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
       </div>
     </div>
   </div>
-
-  <!-- Per-node cards -->
   <div class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.1rem">
       <div class="panel-title" style="margin:0">Active NAS Fleet Units</div>
@@ -422,25 +454,17 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
       <div class="manifest-box">` + string(manifestJSON) + `</div>
     </div>
   </div>
-
 </div>
-
-<!-- Console -->
 <div>
   <div class="panel">
     <div class="panel-title">U-Boot &amp; Agent Console</div>
-    <div class="console" id="con">
-` + logsHTML + `
-    </div>
+    <div class="console" id="con">` + logsHTML + `</div>
   </div>
 </div>
 </div>
-
 <footer>Aegis OTA &bull; Designed for Physical Edge &amp; NAS Hardware Fleets &bull; Animesh Verma &amp; Team</footer>
 </div>
-
 <script>
-// Live clock
 function tick(){
   var t=new Date().toTimeString().slice(0,8);
   document.getElementById('clk').textContent=t;
@@ -448,8 +472,7 @@ function tick(){
 }
 tick(); setInterval(tick,1000);
 
-// Animated progress bar
-function animProg(id, cb){
+function animProg(id,cb){
   var w=document.getElementById('prog-'+id);
   var f=document.getElementById('prog-fill-'+id);
   var l=document.getElementById('prog-lbl-'+id);
@@ -470,12 +493,11 @@ function animProg(id, cb){
   },160);
 }
 
-// Panic countdown
-function animPanic(id, cb){
+function animPanic(id,cb){
   var card=document.getElementById('card-'+id);
   var st=document.getElementById('status-'+id);
   if(card) card.classList.add('panic-anim');
-  if(st){st.style.color='#f87171';}
+  if(st) st.style.color='#f87171';
   var n=5;
   var iv=setInterval(function(){
     if(st) st.textContent='WATCHDOG COUNTDOWN: '+n+'s';
@@ -483,23 +505,19 @@ function animPanic(id, cb){
     if(n<0){
       clearInterval(iv);
       if(card) card.classList.remove('panic-anim');
-      if(st){st.style.color='#10b981';}
       cb();
     }
   },600);
 }
 
-async function runAction(nodeId, action){
+async function runAction(nodeId,action){
   var ids=nodeId==='all'?['nas-alpha-01','nas-bravo-02','nas-charlie-03']:[nodeId];
 
   if(action==='flash_update'){
-    ids.forEach(function(id){
-      var c=document.getElementById('card-'+id);
-      if(c) c.classList.add('pending-anim');
-    });
+    ids.forEach(function(id){var c=document.getElementById('card-'+id);if(c)c.classList.add('pending-anim');});
     var done=0;
     ids.forEach(function(id){
-      animProg(id, async function(){
+      animProg(id,async function(){
         done++;
         if(done===ids.length){
           await doPost(nodeId,action);
@@ -513,20 +531,18 @@ async function runAction(nodeId, action){
   if(action==='simulate_panic'){
     var done2=0;
     ids.forEach(function(id){
-      animPanic(id, async function(){
+      animPanic(id,async function(){
         done2++;
-        if(done2===ids.length){
-          await doPost(nodeId,action);
-        }
+        if(done2===ids.length) await doPost(nodeId,action);
       });
     });
     return;
   }
 
-  await doPost(nodeId, action);
+  await doPost(nodeId,action);
 }
 
-async function doPost(nodeId, action){
+async function doPost(nodeId,action){
   try{
     var r=await fetch('/api/v1/fleet/simulate?node='+nodeId+'&action='+action,{method:'POST'});
     if(r.ok){
@@ -553,14 +569,11 @@ async function refreshNodes(){
       }
       if(verEl) verEl.textContent='v'+dev.current_version;
       if(stEl && stEl.textContent.indexOf('WATCHDOG')===-1){
-        stEl.textContent=dev.health_status;
-        if(dev.health_status==='HEALTHY' || dev.health_status==='REVERTED_TO_STABLE'){
-          stEl.style.color='#10b981';
-        } else if(dev.health_status==='UPGRADE_PENDING'){
-          stEl.style.color='#f59e0b';
-        } else {
-          stEl.style.color='#ef4444';
-        }
+        var hs=dev.health_status;
+        stEl.textContent=hs;
+        if(hs==='HEALTHY') stEl.style.color='#10b981';
+        else if(hs==='UPGRADE_PENDING') stEl.style.color='#f59e0b';
+        else stEl.style.color='#ef4444';
       }
       if(bcEl) bcEl.textContent=dev.boot_count+'/'+dev.boot_limit;
     });
@@ -585,7 +598,6 @@ function renderLogs(logs){
   box.scrollTop=box.scrollHeight;
 }
 
-// Auto-heartbeat every 10s
 setInterval(async function(){
   await fetch('/api/v1/fleet/heartbeat');
   await refreshNodes();
