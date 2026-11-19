@@ -502,8 +502,10 @@ function updateButtonStates(id, hs){
 function updateBatchButtons(devs){
   var anyBusy=Object.keys(busyNodes).some(function(k){return busyNodes[k];});
   var devList=devs?Object.values(devs):[];
-  var anyPending=devList.some(function(d){return d.health_status!=='HEALTHY';});
-  var anyHealthy=devList.some(function(d){return d.health_status==='HEALTHY';});
+  // Batch Stream is ONLY enabled when ALL 3 nodes are in HEALTHY state
+  var allHealthy=devList.length===3 && devList.every(function(d){return d.health_status==='HEALTHY';});
+  // Batch Panic and Batch Commit are ONLY enabled when ALL 3 nodes have an active upgrade pending
+  var allPending=devList.length===3 && devList.every(function(d){return d.health_status!=='HEALTHY';});
 
   var bFlash=document.getElementById('batch-flash');
   var bPanic=document.getElementById('batch-panic');
@@ -519,9 +521,9 @@ function updateBatchButtons(devs){
   }
 
   if(bReset) bReset.disabled=false;
-  if(bFlash) bFlash.disabled=!anyHealthy;
-  if(bPanic) bPanic.disabled=!anyPending;
-  if(bCommit) bCommit.disabled=!anyPending;
+  if(bFlash) bFlash.disabled=!allHealthy;
+  if(bPanic) bPanic.disabled=!allPending;
+  if(bCommit) bCommit.disabled=!allPending;
 }
 
 function animProg(id,cb){
@@ -585,6 +587,26 @@ async function runAction(nodeId,action){
   for(var k=0;k<ids.length;k++){
     if(busyNodes[ids[k]]) return;
   }
+
+  // Filter: only operate on nodes that are in an eligible state for this action
+  if(action==='flash_update'){
+    ids=ids.filter(function(id){
+      var b=document.getElementById('btn-flash-'+id);
+      return b && !b.disabled;
+    });
+  }else if(action==='simulate_panic'){
+    ids=ids.filter(function(id){
+      var b=document.getElementById('btn-panic-'+id);
+      return b && !b.disabled;
+    });
+  }else if(action==='simulate_success'){
+    ids=ids.filter(function(id){
+      var b=document.getElementById('btn-commit-'+id);
+      return b && !b.disabled;
+    });
+  }
+
+  if(ids.length===0) return;
 
   if(action==='flash_update'){
     ids.forEach(function(id){var c=document.getElementById('card-'+id);if(c)c.classList.add('pending-anim');});
