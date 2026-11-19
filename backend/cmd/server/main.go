@@ -93,7 +93,7 @@ func newState() *State {
 		},
 		"nas-charlie-03": {
 			DeviceID: "nas-charlie-03", HardwareModel: "Ampere Altra Edge Storage",
-			CurrentSlot: "B", CurrentVersion: "1.2.0", BootCount: 0, BootLimit: 3,
+			CurrentSlot: "A", CurrentVersion: "1.1.0", BootCount: 0, BootLimit: 3,
 			HealthStatus: "HEALTHY", LastSeen: time.Now(),
 			StoragePool: "NVMe-oF Pool", Uptime: "3d 9h 55m",
 		},
@@ -183,24 +183,26 @@ func main() {
 				dev.UpgradePending = true
 				dev.HealthStatus = "UPGRADE_PENDING"
 				dev.BootCount = 0
-				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming 500MB image to passive Slot %s...", id, passive))
+				dev.CurrentVersion = st.manifest.Version
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming 500MB image (v%s) to passive Slot %s...", id, st.manifest.Version, passive))
 				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv active_slot=%s upgrade_available=1 bootcount=0", id, passive))
 
 			case "simulate_panic":
 				dev.BootCount++
 				if dev.BootCount < dev.BootLimit {
-					dev.HealthStatus = "CRASH_DETECTED"
+					dev.HealthStatus = fmt.Sprintf("CRASH (ATTEMPT %d/%d)", dev.BootCount, dev.BootLimit)
 					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — VFS: unable to mount rootfs! (Attempt %d/%d)", id, dev.BootCount, dev.BootLimit))
-					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog timer reset machine. U-Boot bootcount incremented to %d/%d", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog timer expired! Hard power-cycle rebooted board. Bootcount = %d/%d", id, dev.BootCount, dev.BootLimit))
 				} else {
-					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — fatal crash! Boot attempt %d reached limit %d!", id, dev.BootCount, dev.BootLimit))
-					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered hard power-cycle!", id))
-					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount (%d) >= bootlimit (%d)! Triggering ALTBOOTCMD auto-rollback!", id, dev.BootCount, dev.BootLimit))
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — fatal crash on Attempt 3/3!", id))
+					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered board power-cycle!", id))
+					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] BOOTCOUNT (3/3) EXCEEDED BOOTLIMIT! Triggering ALTBOOTCMD auto-rollback!", id))
 					dev.BootCount = 0
 					dev.UpgradePending = false
-					dev.HealthStatus = "HEALTHY"
+					dev.HealthStatus = "REVERTED_TO_STABLE"
 					dev.CurrentVersion = "1.1.0"
-					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Rollback successful! Booted into fallback Slot %s (v1.1.0). Zero-brick guaranteed.", id, dev.CurrentSlot))
+					dev.CurrentSlot = "A"
+					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Auto-Rollback complete! Back to Slot A (v1.1.0). Zero-brick self-healing verified.", id))
 				}
 
 			case "simulate_success":
@@ -552,7 +554,13 @@ async function refreshNodes(){
       if(verEl) verEl.textContent='v'+dev.current_version;
       if(stEl && stEl.textContent.indexOf('WATCHDOG')===-1){
         stEl.textContent=dev.health_status;
-        stEl.style.color=dev.health_status==='HEALTHY'?'#10b981':dev.health_status==='UPGRADE_PENDING'?'#f59e0b':'#ef4444';
+        if(dev.health_status==='HEALTHY' || dev.health_status==='REVERTED_TO_STABLE'){
+          stEl.style.color='#10b981';
+        } else if(dev.health_status==='UPGRADE_PENDING'){
+          stEl.style.color='#f59e0b';
+        } else {
+          stEl.style.color='#ef4444';
+        }
       }
       if(bcEl) bcEl.textContent=dev.boot_count+'/'+dev.boot_limit;
     });
