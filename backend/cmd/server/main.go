@@ -187,14 +187,21 @@ func main() {
 				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv active_slot=%s upgrade_available=1 bootcount=1", id, passive))
 
 			case "simulate_panic":
-				st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — VFS: unable to mount root fs on new slot!", id))
-				st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Watchdog timeout (60s)! Hard power-cycling board...", id))
-				st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount %d exceeded bootlimit %d. Triggering altbootcmd!", id, dev.BootLimit, dev.BootLimit))
-				dev.BootCount = 0
-				dev.UpgradePending = false
-				dev.HealthStatus = "HEALTHY"
-				dev.CurrentVersion = "1.1.0"
-				st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Restored fallback Slot %s (v1.1.0). No brick occurred.", id, dev.CurrentSlot))
+				dev.BootCount++
+				if dev.BootCount < dev.BootLimit {
+					dev.HealthStatus = "CRASH_DETECTED"
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — VFS: unable to mount rootfs! (Attempt %d/%d)", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog timer reset machine. U-Boot bootcount incremented to %d/%d", id, dev.BootCount, dev.BootLimit))
+				} else {
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — fatal crash! Boot attempt %d reached limit %d!", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered hard power-cycle!", id))
+					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount (%d) >= bootlimit (%d)! Triggering ALTBOOTCMD auto-rollback!", id, dev.BootCount, dev.BootLimit))
+					dev.BootCount = 0
+					dev.UpgradePending = false
+					dev.HealthStatus = "HEALTHY"
+					dev.CurrentVersion = "1.1.0"
+					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Rollback successful! Booted into fallback Slot %s (v1.1.0). Zero-brick guaranteed.", id, dev.CurrentSlot))
+				}
 
 			case "simulate_success":
 				dev.CurrentSlot = passive
