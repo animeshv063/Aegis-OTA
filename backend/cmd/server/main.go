@@ -25,22 +25,18 @@ type Manifest struct {
 	Metadata       map[string]string `json:"metadata"`
 }
 
-// IMPORTANT: StableSlot and StableVersion track the last known-good state
-// for rollback. These never change until a successful commit.
 type DeviceInfo struct {
-	DeviceID        string    `json:"device_id"`
-	HardwareModel   string    `json:"hardware_model"`
-	CurrentSlot     string    `json:"current_slot"`
-	CurrentVersion  string    `json:"current_version"`
-	StableSlot      string    `json:"stable_slot"`
-	StableVersion   string    `json:"stable_version"`
-	BootCount       int       `json:"boot_count"`
-	BootLimit       int       `json:"boot_limit"`
-	UpgradePending  bool      `json:"upgrade_pending"`
-	HealthStatus    string    `json:"health_status"`
-	LastSeen        time.Time `json:"last_seen"`
-	StoragePool     string    `json:"storage_pool"`
-	Uptime          string    `json:"uptime"`
+	DeviceID       string    `json:"device_id"`
+	HardwareModel  string    `json:"hardware_model"`
+	CurrentSlot    string    `json:"current_slot"`
+	CurrentVersion string    `json:"current_version"`
+	BootCount      int       `json:"boot_count"`
+	BootLimit      int       `json:"boot_limit"`
+	UpgradePending bool      `json:"upgrade_pending"`
+	HealthStatus   string    `json:"health_status"`
+	LastSeen       time.Time `json:"last_seen"`
+	StoragePool    string    `json:"storage_pool"`
+	Uptime         string    `json:"uptime"`
 }
 
 type SimLog struct {
@@ -82,15 +78,12 @@ func newState() *State {
 		},
 	}
 
-	// All nodes start on Slot A, v1.1.0 (factory stable baseline)
 	makeDevice := func(id, hw, pool, uptime string) *DeviceInfo {
 		return &DeviceInfo{
 			DeviceID:       id,
 			HardwareModel:  hw,
 			CurrentSlot:    "A",
 			CurrentVersion: "1.1.0",
-			StableSlot:     "A",
-			StableVersion:  "1.1.0",
 			BootCount:      0,
 			BootLimit:      3,
 			UpgradePending: false,
@@ -108,7 +101,7 @@ func newState() *State {
 	}
 
 	logs := []SimLog{
-		{time.Now().Add(-5 * time.Minute).Format("15:04:05"), "U-BOOT", "INFO", "Dual A/B bootloader initialized. Slot A verified."},
+		{time.Now().Add(-5 * time.Minute).Format("15:04:05"), "U-BOOT", "INFO", "Dual A/B bootloader online. Active partition: Slot A (v1.1.0)."},
 		{time.Now().Add(-4 * time.Minute).Format("15:04:05"), "AGENT", "INFO", "Aegis edge daemon listening for signed release manifests."},
 		{time.Now().Add(-3 * time.Minute).Format("15:04:05"), "WATCHDOG", "INFO", "Hardware watchdog armed. Post-boot self-healing online."},
 	}
@@ -171,7 +164,11 @@ func main() {
 		targets := []string{nodeID}
 		if nodeID == "all" {
 			targets = []string{"nas-alpha-01", "nas-bravo-02", "nas-charlie-03"}
-			st.addLog("CONTROLLER", "INFO", "[BATCH] Initiating fleet-wide OTA deployment to all 3 nodes...")
+			if action == "reset_fleet" {
+				st.addLog("CONTROLLER", "INFO", "[FLEET] Resetting all nodes to initial factory state (Slot A, v1.1.0)...")
+			} else {
+				st.addLog("CONTROLLER", "INFO", fmt.Sprintf("[BATCH] Fleet action triggered: %s", action))
+			}
 		}
 
 		for _, id := range targets {
@@ -181,80 +178,68 @@ func main() {
 			}
 			dev.LastSeen = time.Now()
 
-			// passive = the slot that is NOT currently active
-			passive := "B"
-			if dev.CurrentSlot == "B" {
-				passive = "A"
-			}
-
 			switch action {
 
-			// ── ACTION 1: STREAM UPDATE ──────────────────────────────────────
-			// Streams new OS into passive slot. Active slot untouched.
-			// Version shows new version as "pending trial". Bootcount starts at 0.
+			// ── 1. STREAM TO PASSIVE SLOT ─────────────────────────────────────
 			case "flash_update":
-				// Only allow streaming if not already in a pending state
+				if dev.UpgradePending {
+					continue // already in upgrade pending
+				}
+				passive := "B"
+				if dev.CurrentSlot == "B" {
+					passive = "A"
+				}
 				dev.UpgradePending = true
 				dev.BootCount = 0
 				dev.HealthStatus = "UPGRADE_PENDING"
-				// Show new version as pending (flashed onto passive slot)
-				// Active slot stays same, but we track what's pending
-				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming v%s image (500MB) to passive Slot %s...", id, st.manifest.Version, passive))
-				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv: active_slot=%s upgrade_available=1 bootcount=0", id, dev.CurrentSlot))
-				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Flash complete. SHA-256 checksum verified on Slot %s. Rebooting into trial boot...", id, passive))
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 signature OK. Streaming v%s image to passive Slot %s...", id, st.manifest.Version, passive))
+				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv: trial_slot=%s upgrade_available=1 bootcount=0", id, dev.CurrentSlot))
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Flashed to Slot %s. Rebooting for trial boot verification...", id, passive))
 
-			// ── ACTION 2: PANIC / CRASH ──────────────────────────────────────
-			// Simulates a boot crash on the new OS.
-			// bootcount increments each time.
-			// When bootcount reaches bootlimit (3), U-Boot auto-rollback fires:
-			//   - Slot reverts to StableSlot (the last committed good slot)
-			//   - Version reverts to StableVersion (the last committed good version)
-			//   - bootcount resets to 0
+			// ── 2. PANIC & ROLLBACK (3 CRASHES -> ROLLBACK TO 1.1.0 SLOT A) ───
 			case "simulate_panic":
 				if !dev.UpgradePending {
-					// No update in progress — nothing to panic about
-					st.addLog("AGENT", "WARN", fmt.Sprintf("[%s] No upgrade pending. Stream an update first before triggering panic.", id))
-					continue
+					continue // no upgrade in progress to panic
 				}
 				dev.BootCount++
 				if dev.BootCount < dev.BootLimit {
-					// Still within limit — crash noted, counting attempts
 					dev.HealthStatus = fmt.Sprintf("BOOT_FAIL %d/%d", dev.BootCount, dev.BootLimit)
-					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic! VFS: cannot mount rootfs. Boot attempt %d/%d failed.", id, dev.BootCount, dev.BootLimit))
-					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Watchdog expired (60s). Hard power-cycle. U-Boot bootcount now %d/%d.", id, dev.BootCount, dev.BootLimit))
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — VFS mount failed. Boot attempt %d/%d.", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "WARN", fmt.Sprintf("[%s] Hardware watchdog triggered board reboot. Bootcount: %d/%d.", id, dev.BootCount, dev.BootLimit))
 				} else {
-					// Limit reached — U-Boot fires altbootcmd, rollback to last stable
-					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic! Boot attempt %d/%d — BOOTLIMIT EXCEEDED!", id, dev.BootCount, dev.BootLimit))
-					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered hard board power-cycle!", id))
-					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount(%d) >= bootlimit(%d)! Executing ALTBOOTCMD...", id, dev.BootCount, dev.BootLimit))
-					// Roll back to last known-good (stable) state
-					dev.CurrentSlot = dev.StableSlot
-					dev.CurrentVersion = dev.StableVersion
+					// 3rd Panic: ALTBOOTCMD rolls back to Slot A v1.1.0 unconditionally
+					dev.CurrentSlot = "A"
+					dev.CurrentVersion = "1.1.0"
 					dev.BootCount = 0
 					dev.UpgradePending = false
 					dev.HealthStatus = "HEALTHY"
-					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] ROLLBACK COMPLETE. Restored Slot %s (v%s). Zero-brick — device self-healed!", id, dev.StableSlot, dev.StableVersion))
+					st.addLog("KERNEL", "ERROR", fmt.Sprintf("[%s] Kernel panic — boot attempt %d/%d. BOOTLIMIT EXCEEDED!", id, dev.BootCount, dev.BootLimit))
+					st.addLog("WATCHDOG", "CRITICAL", fmt.Sprintf("[%s] Hardware watchdog triggered hard power-cycle!", id))
+					st.addLog("U-BOOT", "CRITICAL", fmt.Sprintf("[%s] bootcount >= 3. Executing ALTBOOTCMD → Rollback to Slot A (v1.1.0)...", id))
+					st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] ROLLBACK COMPLETE. Restored Slot A (v1.1.0). Zero-brick self-healed!", id))
 				}
 
-			// ── ACTION 3: HEALTH CHECK & COMMIT ─────────────────────────────
-			// New OS booted successfully and passed all checks.
-			// Permanently commit: switch active slot, update stable baseline.
+			// ── 3. HEALTH & COMMIT (SLOT B, v1.2.0) ───────────────────────────
 			case "simulate_success":
 				if !dev.UpgradePending {
-					st.addLog("AGENT", "WARN", fmt.Sprintf("[%s] No upgrade pending. Stream an update first.", id))
-					continue
+					continue // no upgrade in progress to commit
 				}
-				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] ZFS pool imported OK. 10GbE link UP. All system daemons active.", id))
-				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] Post-boot health checks PASSED on Slot %s (v%s).", id, passive, st.manifest.Version))
-				// Commit: make new slot and version the permanent stable baseline
-				dev.CurrentSlot = passive
-				dev.CurrentVersion = st.manifest.Version
-				dev.StableSlot = passive
-				dev.StableVersion = st.manifest.Version
+				dev.CurrentSlot = "B"
+				dev.CurrentVersion = "1.2.0"
 				dev.BootCount = 0
 				dev.UpgradePending = false
 				dev.HealthStatus = "HEALTHY"
-				st.addLog("AGENT", "SUCCESS", fmt.Sprintf("[%s] COMMIT OK. Slot %s (v%s) is now permanent. bootcount=0 upgrade_available=0.", id, passive, st.manifest.Version))
+				st.addLog("HEALTH", "PASS", fmt.Sprintf("[%s] ZFS pool imported. 10GbE UP. Post-boot health checks PASSED.", id))
+				st.addLog("AGENT", "SUCCESS", fmt.Sprintf("[%s] COMMIT OK. Switched to Slot B (v1.2.0). bootcount=0.", id))
+
+			// ── 4. FACTORY RESET ──────────────────────────────────────────────
+			case "reset_fleet":
+				dev.CurrentSlot = "A"
+				dev.CurrentVersion = "1.1.0"
+				dev.BootCount = 0
+				dev.UpgradePending = false
+				dev.HealthStatus = "HEALTHY"
+				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Factory reset: Slot A (v1.1.0) restored.", id))
 			}
 		}
 
@@ -295,11 +280,20 @@ func buildHTML(st *State) string {
 		if dev.CurrentSlot == "B" {
 			slotClass = "slot-b"
 		}
-		statusColor := "#10b981" // green
+		statusColor := "#10b981"
+		flashDis := ""
+		panicDis := "disabled"
+		commitDis := "disabled"
 		if dev.HealthStatus == "UPGRADE_PENDING" {
-			statusColor = "#f59e0b" // orange
+			statusColor = "#f59e0b"
+			flashDis = "disabled"
+			panicDis = ""
+			commitDis = ""
 		} else if dev.HealthStatus != "HEALTHY" {
-			statusColor = "#ef4444" // red for BOOT_FAIL x/y
+			statusColor = "#ef4444"
+			flashDis = "disabled"
+			panicDis = ""
+			commitDis = ""
 		}
 		nodeCardsHTML += fmt.Sprintf(`
 <div class="node-card" id="card-%s">
@@ -309,16 +303,16 @@ func buildHTML(st *State) string {
   </div>
   <div class="node-meta">
     <div>Hardware: <span>%s</span></div>
-    <div>Firmware: <span id="ver-%s">v%s</span></div>
+    <div>Firmware: <span id="ver-%s" style="font-weight:700">v%s</span></div>
     <div>Storage: <span>%s</span></div>
-    <div>Bootcount: <span id="bc-%s">%d/%d</span></div>
+    <div>Bootcount: <span id="bc-%s" style="font-weight:700">%d/%d</span></div>
     <div>Uptime: <span>%s</span></div>
     <div>Status: <span id="status-%s" style="color:%s;font-weight:700">%s</span></div>
   </div>
   <div class="node-actions">
-    <button class="nbtn btn-flash" onclick="runAction('%s','flash_update')">&#9654; Stream to Passive Slot</button>
-    <button class="nbtn btn-panic" onclick="runAction('%s','simulate_panic')">&#9888; Panic &amp; Rollback</button>
-    <button class="nbtn btn-commit" onclick="runAction('%s','simulate_success')">&#10003; Health &amp; Commit</button>
+    <button class="nbtn btn-flash" id="btn-flash-%s" onclick="runAction('%s','flash_update')" %s>&#9654; Stream to Passive Slot</button>
+    <button class="nbtn btn-panic" id="btn-panic-%s" onclick="runAction('%s','simulate_panic')" %s>&#9888; Panic &amp; Rollback</button>
+    <button class="nbtn btn-commit" id="btn-commit-%s" onclick="runAction('%s','simulate_success')" %s>&#10003; Health &amp; Commit</button>
   </div>
   <div class="prog-wrap" id="prog-%s">
     <div class="prog-label" id="prog-lbl-%s">Streaming... 0%%</div>
@@ -332,7 +326,9 @@ func buildHTML(st *State) string {
 			id, dev.BootCount, dev.BootLimit,
 			dev.Uptime,
 			id, statusColor, dev.HealthStatus,
-			id, id, id,
+			id, id, flashDis,
+			id, id, panicDis,
+			id, id, commitDis,
 			id, id, id,
 		)
 	}
@@ -373,8 +369,10 @@ header{display:flex;justify-content:space-between;align-items:center;padding-bot
 .panel{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:1.4rem;margin-bottom:1rem}
 .panel-title{font-size:1rem;font-weight:700;margin-bottom:1.1rem}
 .batch-box{background:#0a0f1c;border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:1rem;margin-bottom:1.2rem}
-.batch-title{font-size:.85rem;font-weight:700;color:var(--warn);margin-bottom:.8rem}
+.batch-title{font-size:.85rem;font-weight:700;color:var(--warn);margin-bottom:.8rem;display:flex;justify-content:space-between;align-items:center}
 .batch-btns{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}
+.btn-reset{background:rgba(148,163,184,.15);border:1px solid rgba(148,163,184,.3);color:#cbd5e1;padding:.3rem .7rem;border-radius:6px;font-size:.72rem;font-weight:700;cursor:pointer}
+.btn-reset:hover{background:rgba(148,163,184,.3)}
 .node-card{background:#0a0f1c;border:1px solid #1a2234;border-radius:10px;padding:1.1rem;margin-bottom:.9rem;transition:border-color .3s,box-shadow .3s}
 .node-card.panic-anim{border-color:var(--danger)!important;box-shadow:0 0 18px rgba(239,68,68,.35)!important;animation:panicPulse .55s infinite}
 .node-card.pending-anim{border-color:var(--warn)!important}
@@ -388,6 +386,8 @@ header{display:flex;justify-content:space-between;align-items:center;padding-bot
 .node-meta span{color:var(--text);font-weight:600}
 .node-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}
 .nbtn{padding:.45rem .3rem;border-radius:7px;border:1px solid transparent;font-size:.72rem;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif;text-align:center;transition:all .15s}
+.nbtn:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
+.btn-reset:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 .btn-flash{background:rgba(56,189,248,.12);border-color:rgba(56,189,248,.35);color:#7dd3fc}
 .btn-flash:hover{background:rgba(56,189,248,.28)}
 .btn-panic{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.35);color:#fca5a5}
@@ -435,11 +435,14 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
   <div class="panel">
     <div class="panel-title">&#9889; Batch Fleet OTA &mdash; All 3 Nodes Simultaneously</div>
     <div class="batch-box">
-      <div class="batch-title">&#9888; Fires all three NAS units at once</div>
+      <div class="batch-title">
+        <span>&#9888; Fleet-wide Operations</span>
+        <button class="btn-reset" id="btn-reset-all" onclick="runAction('all','reset_fleet')">&#8635; Factory Reset to v1.1.0</button>
+      </div>
       <div class="batch-btns">
-        <button class="nbtn btn-flash" onclick="runAction('all','flash_update')">&#9654; Batch Stream to Passive Slot</button>
-        <button class="nbtn btn-panic" onclick="runAction('all','simulate_panic')">&#9888; Batch Panic &amp; Rollback</button>
-        <button class="nbtn btn-commit" onclick="runAction('all','simulate_success')">&#10003; Batch Health &amp; Commit</button>
+        <button class="nbtn btn-flash" id="batch-flash" onclick="runAction('all','flash_update')">&#9654; Batch Stream to Passive Slot</button>
+        <button class="nbtn btn-panic" id="batch-panic" onclick="runAction('all','simulate_panic')" disabled>&#9888; Batch Panic &amp; Rollback</button>
+        <button class="nbtn btn-commit" id="batch-commit" onclick="runAction('all','simulate_success')" disabled>&#10003; Batch Health &amp; Commit</button>
       </div>
     </div>
   </div>
@@ -472,11 +475,66 @@ function tick(){
 }
 tick(); setInterval(tick,1000);
 
+var busyNodes = {};
+
+function updateButtonStates(id, hs){
+  var bFlash=document.getElementById('btn-flash-'+id);
+  var bPanic=document.getElementById('btn-panic-'+id);
+  var bCommit=document.getElementById('btn-commit-'+id);
+  if(!bFlash||!bPanic||!bCommit) return;
+
+  if(busyNodes[id]){
+    bFlash.disabled=true;
+    bPanic.disabled=true;
+    bCommit.disabled=true;
+    return;
+  }
+
+  if(hs==='HEALTHY'){
+    bFlash.disabled=false;
+    bPanic.disabled=true;
+    bCommit.disabled=true;
+  }else{
+    // UPGRADE_PENDING or BOOT_FAIL
+    bFlash.disabled=true;
+    bPanic.disabled=false;
+    bCommit.disabled=false;
+  }
+}
+
+function updateBatchButtons(devs){
+  var anyBusy=Object.keys(busyNodes).some(function(k){return busyNodes[k];});
+  var devList=devs?Object.values(devs):[];
+  var anyPending=devList.some(function(d){return d.health_status!=='HEALTHY';});
+  var anyHealthy=devList.some(function(d){return d.health_status==='HEALTHY';});
+
+  var bFlash=document.getElementById('batch-flash');
+  var bPanic=document.getElementById('batch-panic');
+  var bCommit=document.getElementById('batch-commit');
+  var bReset=document.getElementById('btn-reset-all');
+
+  if(anyBusy){
+    if(bFlash) bFlash.disabled=true;
+    if(bPanic) bPanic.disabled=true;
+    if(bCommit) bCommit.disabled=true;
+    if(bReset) bReset.disabled=true;
+    return;
+  }
+
+  if(bReset) bReset.disabled=false;
+  if(bFlash) bFlash.disabled=!anyHealthy;
+  if(bPanic) bPanic.disabled=!anyPending;
+  if(bCommit) bCommit.disabled=!anyPending;
+}
+
 function animProg(id,cb){
+  busyNodes[id]=true;
+  updateButtonStates(id,'BUSY');
+  updateBatchButtons();
   var w=document.getElementById('prog-'+id);
   var f=document.getElementById('prog-fill-'+id);
   var l=document.getElementById('prog-lbl-'+id);
-  if(!w){cb();return;}
+  if(!w){busyNodes[id]=false;cb();return;}
   w.style.display='block';
   var steps=[2,5,9,14,20,27,35,43,51,59,66,73,79,84,89,93,96,98,100];
   var i=0;
@@ -484,34 +542,52 @@ function animProg(id,cb){
     if(i>=steps.length){
       clearInterval(iv);
       l.textContent='Flash complete. SHA-256 verified \u2713';
-      setTimeout(function(){w.style.display='none';f.style.width='0%';cb();},1200);
+      setTimeout(function(){
+        w.style.display='none';
+        f.style.width='0%';
+        busyNodes[id]=false;
+        cb();
+      },1200);
       return;
     }
     f.style.width=steps[i]+'%';
-    l.textContent='Streaming image to passive partition... '+steps[i]+'%';
+    l.textContent='Streaming image to passive slot... '+steps[i]+'%';
     i++;
   },160);
 }
 
 function animPanic(id,cb){
+  busyNodes[id]=true;
+  updateButtonStates(id,'BUSY');
+  updateBatchButtons();
   var card=document.getElementById('card-'+id);
   var st=document.getElementById('status-'+id);
   if(card) card.classList.add('panic-anim');
-  if(st) st.style.color='#f87171';
+  if(st){
+    st.style.color='#ef4444';
+    st.textContent='WATCHDOG COUNTDOWN: 5s';
+  }
   var n=5;
   var iv=setInterval(function(){
-    if(st) st.textContent='WATCHDOG COUNTDOWN: '+n+'s';
     n--;
-    if(n<0){
+    if(n>0){
+      if(st) st.textContent='WATCHDOG COUNTDOWN: '+n+'s';
+    }else{
       clearInterval(iv);
       if(card) card.classList.remove('panic-anim');
+      if(st) st.textContent='HARDWARE RESET...';
+      busyNodes[id]=false;
       cb();
     }
-  },600);
+  },700);
 }
 
 async function runAction(nodeId,action){
   var ids=nodeId==='all'?['nas-alpha-01','nas-bravo-02','nas-charlie-03']:[nodeId];
+  // Guard: if any target node is busy, ignore click
+  for(var k=0;k<ids.length;k++){
+    if(busyNodes[ids[k]]) return;
+  }
 
   if(action==='flash_update'){
     ids.forEach(function(id){var c=document.getElementById('card-'+id);if(c)c.classList.add('pending-anim');});
@@ -568,7 +644,7 @@ async function refreshNodes(){
         slotEl.className='slot-pill '+(dev.current_slot==='A'?'slot-a':'slot-b');
       }
       if(verEl) verEl.textContent='v'+dev.current_version;
-      if(stEl && stEl.textContent.indexOf('WATCHDOG')===-1){
+      if(stEl && !busyNodes[id]){
         var hs=dev.health_status;
         stEl.textContent=hs;
         if(hs==='HEALTHY') stEl.style.color='#10b981';
@@ -576,7 +652,9 @@ async function refreshNodes(){
         else stEl.style.color='#ef4444';
       }
       if(bcEl) bcEl.textContent=dev.boot_count+'/'+dev.boot_limit;
+      updateButtonStates(id, dev.health_status);
     });
+    updateBatchButtons(devs);
   }catch(e){console.error(e);}
 }
 

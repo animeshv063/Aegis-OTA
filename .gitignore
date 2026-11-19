@@ -15,6 +15,7 @@ coverage.out
 *.test
 
 # Generated binaries and archives
+backend/server
 *.exe
 *.dll
 *.so
