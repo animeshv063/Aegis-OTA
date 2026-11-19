@@ -182,9 +182,9 @@ func main() {
 			case "flash_update":
 				dev.UpgradePending = true
 				dev.HealthStatus = "UPGRADE_PENDING"
-				dev.BootCount = 1
+				dev.BootCount = 0
 				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 sig verified OK. Streaming 500MB image to passive Slot %s...", id, passive))
-				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv active_slot=%s upgrade_available=1 bootcount=1", id, passive))
+				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv active_slot=%s upgrade_available=1 bootcount=0", id, passive))
 
 			case "simulate_panic":
 				dev.BootCount++
