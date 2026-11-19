@@ -193,7 +193,8 @@ func main() {
 				dev.BootCount = 0
 				dev.UpgradePending = false
 				dev.HealthStatus = "HEALTHY"
-				st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Restored fallback Slot %s. No brick occurred.", id, dev.CurrentSlot))
+				dev.CurrentVersion = "1.1.0"
+				st.addLog("U-BOOT", "SUCCESS", fmt.Sprintf("[%s] Restored fallback Slot %s (v1.1.0). No brick occurred.", id, dev.CurrentSlot))
 
 			case "simulate_success":
 				dev.CurrentSlot = passive
