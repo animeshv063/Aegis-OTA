@@ -182,15 +182,12 @@ func main() {
 
 			// ── 1. STREAM TO PASSIVE SLOT ─────────────────────────────────────
 			case "flash_update":
-				if dev.UpgradePending {
-					continue // already in upgrade pending
-				}
 				passive := "B"
 				if dev.CurrentSlot == "B" {
 					passive = "A"
 				}
 				dev.UpgradePending = true
-				dev.BootCount = 0
+				dev.BootCount = 0 // ALWAYS reset bootcount to 0 on new flash!
 				dev.HealthStatus = "UPGRADE_PENDING"
 				st.addLog("AGENT", "INFO", fmt.Sprintf("[%s] Ed25519 signature OK. Streaming v%s image to passive Slot %s...", id, st.manifest.Version, passive))
 				st.addLog("U-BOOT", "WARN", fmt.Sprintf("[%s] fw_setenv: trial_slot=%s upgrade_available=1 bootcount=0", id, dev.CurrentSlot))
