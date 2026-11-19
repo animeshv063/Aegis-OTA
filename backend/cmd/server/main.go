@@ -78,6 +78,12 @@ func newState() *State {
 		},
 	}
 
+	st := &State{manifest: m, pubHex: hex.EncodeToString(pub)}
+	st.resetFleet()
+	return st
+}
+
+func (s *State) resetFleet() {
 	makeDevice := func(id, hw, pool, uptime string) *DeviceInfo {
 		return &DeviceInfo{
 			DeviceID:       id,
@@ -94,19 +100,17 @@ func newState() *State {
 		}
 	}
 
-	devices := map[string]*DeviceInfo{
+	s.devices = map[string]*DeviceInfo{
 		"nas-alpha-01":   makeDevice("nas-alpha-01", "Rockchip RK3588 Quad-SATA", "ZFS RAIDZ2 (4x 8TB)", "12d 4h 33m"),
 		"nas-bravo-02":   makeDevice("nas-bravo-02", "Intel Atom x6413E 8-Bay NAS", "ZFS Mirror (2x 16TB)", "7d 2h 11m"),
 		"nas-charlie-03": makeDevice("nas-charlie-03", "Ampere Altra Edge Storage", "NVMe-oF Pool", "3d 9h 55m"),
 	}
 
-	logs := []SimLog{
+	s.logs = []SimLog{
 		{time.Now().Add(-5 * time.Minute).Format("15:04:05"), "U-BOOT", "INFO", "Dual A/B bootloader online. Active partition: Slot A (v1.1.0)."},
 		{time.Now().Add(-4 * time.Minute).Format("15:04:05"), "AGENT", "INFO", "Aegis edge daemon listening for signed release manifests."},
 		{time.Now().Add(-3 * time.Minute).Format("15:04:05"), "WATCHDOG", "INFO", "Hardware watchdog armed. Post-boot self-healing online."},
 	}
-
-	return &State{devices: devices, manifest: m, pubHex: hex.EncodeToString(pub), logs: logs}
 }
 
 func (s *State) addLog(src, level, msg string) {
@@ -130,6 +134,10 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
+		st.mu.Lock()
+		st.resetFleet()
+		st.mu.Unlock()
+
 		st.mu.RLock()
 		defer st.mu.RUnlock()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -266,6 +274,28 @@ func main() {
 // ── HTML Builder ──────────────────────────────────────────────────────────────
 
 func buildHTML(st *State) string {
+	allHealthy := true
+	allPending := true
+	for _, dev := range st.devices {
+		if dev.HealthStatus != "HEALTHY" {
+			allHealthy = false
+		} else {
+			allPending = false
+		}
+	}
+	batchFlashDis := ""
+	if !allHealthy {
+		batchFlashDis = "disabled"
+	}
+	batchPanicDis := "disabled"
+	if allPending {
+		batchPanicDis = ""
+	}
+	batchCommitDis := "disabled"
+	if allPending {
+		batchCommitDis = ""
+	}
+
 	nodeOrder := []string{"nas-alpha-01", "nas-bravo-02", "nas-charlie-03"}
 	nodeCardsHTML := ""
 	for _, id := range nodeOrder {
@@ -437,9 +467,9 @@ footer{text-align:center;margin-top:2rem;font-size:.77rem;color:#475569;border-t
         <button class="btn-reset" id="btn-reset-all" onclick="runAction('all','reset_fleet')">&#8635; Factory Reset to v1.1.0</button>
       </div>
       <div class="batch-btns">
-        <button class="nbtn btn-flash" id="batch-flash" onclick="runAction('all','flash_update')">&#9654; Batch Stream to Passive Slot</button>
-        <button class="nbtn btn-panic" id="batch-panic" onclick="runAction('all','simulate_panic')" disabled>&#9888; Batch Panic &amp; Rollback</button>
-        <button class="nbtn btn-commit" id="batch-commit" onclick="runAction('all','simulate_success')" disabled>&#10003; Batch Health &amp; Commit</button>
+        <button class="nbtn btn-flash" id="batch-flash" onclick="runAction('all','flash_update')" ` + batchFlashDis + `>&#9654; Batch Stream to Passive Slot</button>
+        <button class="nbtn btn-panic" id="batch-panic" onclick="runAction('all','simulate_panic')" ` + batchPanicDis + `>&#9888; Batch Panic &amp; Rollback</button>
+        <button class="nbtn btn-commit" id="batch-commit" onclick="runAction('all','simulate_success')" ` + batchCommitDis + `>&#10003; Batch Health &amp; Commit</button>
       </div>
     </div>
   </div>
@@ -695,6 +725,7 @@ function renderLogs(logs){
   box.scrollTop=box.scrollHeight;
 }
 
+refreshNodes();
 setInterval(async function(){
   await fetch('/api/v1/fleet/heartbeat');
   await refreshNodes();
