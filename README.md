@@ -56,16 +56,6 @@ Aegis OTA is built around the assumption that the environment can fail at any ti
 - Support robust boot switching with minimal operator intervention
 - Recover automatically from failed upgrades or bad kernel state
 
-## Recommended project names
-
-If you want a stronger brand identity, a few good options are:
-
-- Aegis OTA
-- Aegis Fleet
-- Ashvatha Edge Guard
-- NodeShield OTA
-- BootLock Fleet
-- SafeSwap Edge
 
 ## Typical flow
 
